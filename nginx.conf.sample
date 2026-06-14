@@ -1,0 +1,53 @@
+# Sample Nginx reverse proxy for the AndroZoo Flask app.
+#
+# Nginx terminates client connections, serves static files directly, and
+# proxies everything else to Gunicorn on 127.0.0.1:8000.
+#
+# Place in /etc/nginx/sites-available/androzoo and symlink into
+# sites-enabled, then: sudo nginx -t && sudo systemctl reload nginx
+
+server {
+    listen 80;
+    server_name androzoo.example.com;   # change to your host / IP
+
+    # Let Nginx serve the static assets directly (faster than Flask).
+    location /static/ {
+        alias /opt/androzoo/web/static/;
+        expires 1h;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # The search itself runs in the background and the request returns
+        # immediately, so these timeouts only need to cover normal request
+        # handling. Raised anyway as a safety margin.
+        proxy_connect_timeout 30s;
+        proxy_send_timeout    120s;
+        proxy_read_timeout    120s;
+    }
+
+    # Result CSVs can be large; allow generous response buffering / size.
+    client_max_body_size 10m;
+}
+
+# --- HTTPS variant --------------------------------------------------------
+# For production, terminate TLS here. Obtain a certificate (e.g. with
+# certbot) and replace the server block above with:
+#
+# server {
+#     listen 443 ssl;
+#     server_name androzoo.example.com;
+#     ssl_certificate     /etc/letsencrypt/live/androzoo.example.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/androzoo.example.com/privkey.pem;
+#     ... (same location blocks as above) ...
+# }
+# server {
+#     listen 80;
+#     server_name androzoo.example.com;
+#     return 301 https://$host$request_uri;   # redirect HTTP -> HTTPS
+# }

@@ -1,18 +1,29 @@
 # AndroZoo Catalogue Search
 
-A simple desktop app for searching the [AndroZoo](https://androzoo.uni.lu/)
-catalogue list (`latest.csv.gz`) and exporting matching rows to a CSV file.
+Search the [AndroZoo](https://androzoo.uni.lu/) catalogue list
+(`latest.csv.gz`) and export matching rows to a CSV file.
 
-Because a full scan of the catalogue can take several minutes, the search runs
-on a background thread and the result is pushed back to the UI when ready — the
-window never freezes while a search is running.
+A full scan of the catalogue can take several minutes — far longer than a normal
+HTTP request will wait — so in both versions below the search runs in the
+background and the result is delivered when it is ready. The interface never
+freezes and nothing times out.
 
-## How it works
+The same backend (`androzoo.py`) powers two front-ends; pick the one that fits:
 
-The app is built with [pywebview](https://pywebview.flowrl.com/): a native
-desktop window rendering an HTML/JS front-end, with Python supplying the search
-logic. There is no web server and no HTTP request, so there is no request
-timeout to work around — long searches simply run off the UI thread.
+| Version             | When to use it                                       | Front-end |
+| ------------------- | ---------------------------------------------------- | --------- |
+| **Desktop** (`app.py`) | Local, single user. No server, no proxy — just run it. | pywebview |
+| **Web** (`web/app_flask.py`) | Reachable from other machines / a browser. Sits behind Gunicorn + Nginx. | Flask |
+
+`androzoo.py` has no UI dependency, so it is shared unchanged between the two;
+only the front-end differs.
+
+## How the desktop version works
+
+The desktop app uses [pywebview](https://pywebview.flowrl.com/): a native
+window rendering an HTML/JS front-end, with Python supplying the search logic.
+There is no web server and no HTTP request, so there is no request timeout to
+work around — long searches simply run off the UI thread.
 
 ```
 ┌─────────────────────┐   js_api call    ┌──────────────────┐
@@ -42,6 +53,13 @@ faster.
 | `assets/index.html`   | The search form UI.                                           |
 | `assets/script.js`    | Front-end logic and the `onSearchDone` / `onSearchError` callbacks. |
 | `assets/styles.css`   | Styling.                                                      |
+| `web/app_flask.py`    | **Web version.** Flask app with the submit/poll/download job pattern. Reuses `androzoo.py`. |
+| `web/templates/index.html` | Search form (Jinja template).                            |
+| `web/static/script.js` | Browser logic: submit a search, poll for completion, download the CSV. |
+| `web/static/styles.css` | Styling for the web UI.                                      |
+| `web/gunicorn.conf.py` | Gunicorn configuration for serving the Flask app.            |
+| `web/nginx.conf.sample` | Sample Nginx reverse-proxy config (HTTP and HTTPS).         |
+| `web/requirements.txt` | Python dependencies for the web version.                     |
 
 ## Requirements
 
@@ -88,7 +106,7 @@ export AZ_CATALOGUE=/data/androzoo/latest.csv.gz
 export AZ_APIKEY=your_api_key_here
 ```
 
-## Running the app
+## Running the desktop app
 
 From the project root:
 
@@ -142,6 +160,115 @@ Each row is a full catalogue line:
 
 Downloaded APKs (if you use `--download`) are saved to the extract directory,
 named by their sha256.
+
+## Running the web version (Flask + Gunicorn + Nginx)
+
+The web version exposes the same search over HTTP so it can be reached from a
+browser on another machine. Because the search can take minutes, it uses a
+**submit / poll / download** pattern — the long search never runs inside a
+request, so neither Flask, Gunicorn, nor Nginx ever time out:
+
+```
+POST /search                 -> starts a background job, returns a job_id at once
+GET  /search/<id>            -> poll: running / done / failed
+GET  /search/<id>/download   -> download the result CSV once done
+```
+
+The browser submits once, polls every few seconds, and offers a download link
+when the job is done.
+
+```
+Browser ──HTTP──► Nginx ──proxy──► Gunicorn ──► Flask (app_flask.py)
+                  (TLS, static)                      │
+                                                     ▼
+                                            androzoo.py (zcat|grep|awk)
+                                                     │
+                                            background thread → result CSV
+```
+
+### Project layout
+
+The web app imports `androzoo.py`. Either copy it into `web/` or symlink it so
+the two versions share one backend:
+
+```bash
+cd web
+ln -s ../androzoo.py androzoo.py
+```
+
+### 1. Install dependencies
+
+```bash
+cd web
+pip install -r requirements.txt
+```
+
+### 2. Run locally (development)
+
+```bash
+export AZ_CATALOGUE=/data/androzoo/latest.csv.gz
+python app_flask.py          # http://127.0.0.1:5000
+```
+
+This uses Flask's built-in development server — fine for testing, not for
+deployment.
+
+### 3. Serve with Gunicorn (production WSGI server)
+
+```bash
+export AZ_CATALOGUE=/data/androzoo/latest.csv.gz
+gunicorn -c gunicorn.conf.py app_flask:app
+```
+
+Gunicorn listens on `127.0.0.1:8000` (see `gunicorn.conf.py`).
+
+> **Keep `workers = 1`.** The job registry lives in process memory, so a job
+> started in one worker is invisible to another — a poll could hit a worker
+> that never saw the job. One worker with several threads handles concurrent
+> searches correctly for local / small-team use. To run multiple workers,
+> move the `JOBS` dict into Redis or a database.
+
+### 4. Put Nginx in front
+
+`nginx.conf.sample` is a ready-to-edit reverse-proxy config: Nginx terminates
+client connections, serves `/static/` directly, and proxies everything else to
+Gunicorn. To install:
+
+```bash
+sudo cp nginx.conf.sample /etc/nginx/sites-available/androzoo
+# edit server_name and the /static/ alias path to match your install
+sudo ln -s /etc/nginx/sites-available/androzoo /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+The sample includes a commented HTTPS block; for production, obtain a
+certificate (e.g. with [certbot](https://certbot.eff.org/)) and use the
+TLS variant to terminate HTTPS at Nginx.
+
+### 5. (Optional) run Gunicorn as a service
+
+So the app starts on boot and restarts on failure, create a systemd unit at
+`/etc/systemd/system/androzoo.service`:
+
+```ini
+[Unit]
+Description=AndroZoo catalogue search
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/androzoo/web
+Environment=AZ_CATALOGUE=/data/androzoo/latest.csv.gz
+Environment=AZ_RESULTS_DIR=/opt/androzoo/web/results
+ExecStart=/usr/bin/gunicorn -c gunicorn.conf.py app_flask:app
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now androzoo
+```
 
 ## A note on performance
 
