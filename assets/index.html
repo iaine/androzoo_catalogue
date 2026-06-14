@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AndroZoo Catalogue Search</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <main class="app">
+        <header class="header">
+            <h1>AndroZoo Catalogue</h1>
+            <p class="subtitle">Search the catalogue list and export matches to CSV.</p>
+        </header>
+
+        <section class="search-card">
+            <div class="field">
+                <label for="apk_name">Package name</label>
+                <input id="apk_name" type="text"
+                       placeholder="e.g. com.example.app  (use * as wildcard)">
+            </div>
+
+            <div class="field">
+                <label for="store">Market / store</label>
+                <input id="store" type="text" placeholder="e.g. play.google.com">
+            </div>
+
+            <div class="row">
+                <div class="field">
+                    <label for="start">From date (dex_date)</label>
+                    <input id="start" type="date">
+                </div>
+                <div class="field">
+                    <label for="end">To date (dex_date)</label>
+                    <input id="end" type="date">
+                </div>
+            </div>
+
+            <div class="actions">
+                <button id="search-btn" class="primary" type="button">Search</button>
+                <span id="hint" class="hint">Provide at least one filter.</span>
+            </div>
+        </section>
+
+        <section id="status" class="status" hidden>
+            <div class="spinner" aria-hidden="true"></div>
+            <span id="status-text">Searching… this can take a few minutes.</span>
+        </section>
+
+        <section id="result" class="result" hidden>
+            <h2 id="result-count"></h2>
+            <p class="result-path">
+                Saved to:<br>
+                <code id="result-path"></code>
+            </p>
+        </section>
+
+        <section id="error" class="error" hidden>
+            <strong>Search failed.</strong>
+            <p id="error-text"></p>
+        </section>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+</html>
